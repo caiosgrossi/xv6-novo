@@ -1,84 +1,82 @@
 #include "kernel/types.h"
-#include "kernel/stat.h"
-#include "user/user.h"
-#include "kernel/pstat.h"
+#include "user.h"
+#include "pstat.h"
 
-void spin() {
-  int i = 0;
-  int j = 0;
-  volatile int k = 0;
-  for(i = 0; i < 500; ++i) {
-    for(j = 0; j < 10000000; ++j) {
-      k = j % 10;
-      k = k + 1;
-    }
-  }
-}
-
-void print_pinfo(struct pstat *st) {
-   int i;
-   for(i = 0; i < NPROC; i++) {
-     if (st->inuse[i]) {
-       printf("pid: %d tickets: %d ticks: %d\n", st->pid[i], st->tickets[i], st->ticks[i]);
-     }
-   }
-}
+// Longer run for more stable statistics (about 1s per sample)
+// Increase samples and sample faster so the run converges more quickly
+#define SAMPLES 600
+#define SLEEP_TICKS 1
 
 int
 main(int argc, char *argv[])
 {
-  int pid1, pid2, pid3;
-  
-  // Set parent tickets to something high so it doesn't starve, 
-  // though it sleeps mostly.
-  settickets(100);
+  int tickets[3] = {30, 20, 10};
+  int pids[3];
 
-  if((pid1 = fork()) == 0) {
-    settickets(30);
-    spin();
-    exit(0);
+  // fork 3 children
+  for(int i = 0; i < 3; i++){
+    int pid = fork();
+    if(pid < 0){
+      printf("fork failed\n");
+      exit(1);
+    }
+    if(pid == 0){
+      // child: set tickets and busy-loop
+      settickets(tickets[i]);
+      // busy loop to consume CPU
+      while(1) ;
+      exit(0);
+    } else {
+      pids[i] = pid;
+    }
   }
 
-  if((pid2 = fork()) == 0) {
-    settickets(20);
-    spin();
-    exit(0);
-  }
-
-  if((pid3 = fork()) == 0) {
-    settickets(10);
-    spin();
-    exit(0);
-  }
-
-  struct pstat st;
-  int time_steps = 0;
-  
-  // Monitor for a while
-  while(time_steps < 20) {
-    if(getpinfo(&st) == 0) {
-      printf("\nTime step %d:\n", time_steps);
-      // Find our children and print their ticks
-      int i;
-      for(i = 0; i < NPROC; i++) {
-        if (st.inuse[i]) {
-            if (st.pid[i] == pid1) printf("Child 1 (%d tickets): %d ticks\n", st.tickets[i], st.ticks[i]);
-            if (st.pid[i] == pid2) printf("Child 2 (%d tickets): %d ticks\n", st.tickets[i], st.ticks[i]);
-            if (st.pid[i] == pid3) printf("Child 3 (%d tickets): %d ticks\n", st.tickets[i], st.ticks[i]);
+  // parent: sample ticks and print CSV header
+  // print pid and ticket info to verify settickets worked
+  struct pstat st0;
+  // give children some time to run settickets; poll pstat until tickets set
+  int waited = 0;
+  int t0=0,t1=0,t2=0;
+  while(waited < 100){
+    if(getpinfo(&st0) == 0){
+      for(int i=0;i<NPROC;i++){
+        if(st0.inuse[i]){
+          if(st0.pid[i]==pids[0]) t0 = st0.tickets[i];
+          if(st0.pid[i]==pids[1]) t1 = st0.tickets[i];
+          if(st0.pid[i]==pids[2]) t2 = st0.tickets[i];
         }
       }
+      if(t0==tickets[0] && t1==tickets[1] && t2==tickets[2]) break;
     }
-    pause(10); // Sleep for 10 ticks
-    time_steps++;
+    pause(1);
+    waited++;
+  }
+  printf("pids: %d(%d), %d(%d), %d(%d)\n", pids[0], t0, pids[1], t1, pids[2], t2);
+  printf("sample,%d,%d,%d\n", pids[0], pids[1], pids[2]);
+
+  struct pstat st;
+  for(int s = 0; s < SAMPLES; s++){
+    if(getpinfo(&st) < 0){
+      printf("getpinfo failed\n");
+      break;
+    }
+    int ticks0 = 0, ticks1 = 0, ticks2 = 0;
+    for(int i = 0; i < NPROC; i++){
+      if(st.inuse[i]){
+        if(st.pid[i] == pids[0]) ticks0 = st.ticks[i];
+        if(st.pid[i] == pids[1]) ticks1 = st.ticks[i];
+        if(st.pid[i] == pids[2]) ticks2 = st.ticks[i];
+      }
+    }
+    printf("%d,%d,%d,%d\n", s, ticks0, ticks1, ticks2);
+    pause(SLEEP_TICKS);
   }
 
-  // Kill children
-  kill(pid1);
-  kill(pid2);
-  kill(pid3);
-  wait(0);
-  wait(0);
-  wait(0);
+  // kill children and wait
+  for(int i = 0; i < 3; i++){
+    kill(pids[i]);
+    wait(0);
+  }
 
   exit(0);
 }
