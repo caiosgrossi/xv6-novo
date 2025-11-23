@@ -6,6 +6,8 @@
 #include "spinlock.h"
 #include "proc.h"
 #include "vm.h"
+#include "pstat.h"
+extern struct proc proc[];
 
 uint64
 sys_exit(void)
@@ -93,6 +95,54 @@ sys_kill(void)
 
   argint(0, &pid);
   return kkill(pid);
+}
+
+uint64
+sys_settickets(void)
+{
+  int n;
+  argint(0, &n);
+  if(n < 1)
+    return -1;
+  struct proc *p = myproc();
+  acquire(&p->lock);
+  p->tickets = n;
+  release(&p->lock);
+  return 0;
+}
+
+uint64
+sys_getpinfo(void)
+{
+  uint64 addr;
+  argaddr(0, &addr);
+  if(addr == 0)
+    return -1;
+
+  struct pstat ks;
+  struct proc *p;
+  for(int i = 0; i < NPROC; i++){
+    ks.inuse[i] = 0;
+    ks.tickets[i] = 0;
+    ks.pid[i] = 0;
+    ks.ticks[i] = 0;
+  }
+
+  int i = 0;
+  for(p = proc; p < &proc[NPROC]; p++){
+    acquire(&p->lock);
+    ks.inuse[i] = (p->state != UNUSED);
+    ks.tickets[i] = p->tickets;
+    ks.pid[i] = p->pid;
+    ks.ticks[i] = p->ticks;
+    release(&p->lock);
+    i++;
+  }
+
+  // copy to user
+  if(copyout(myproc()->pagetable, addr, (char*)&ks, sizeof(ks)) < 0)
+    return -1;
+  return 0;
 }
 
 // return how many clock tick interrupts have occurred

@@ -18,6 +18,16 @@ struct spinlock pid_lock;
 extern void forkret(void);
 static void freeproc(struct proc *p);
 
+// simple RNG for the scheduler
+static uint rngseed = 123456789;
+static uint
+randstate(void)
+{
+  // linear congruential generator
+  rngseed = rngseed * 1664525 + 1013904223;
+  return rngseed;
+}
+
 extern char trampoline[]; // trampoline.S
 
 // helps ensure that wakeups of wait()ing
@@ -125,6 +135,10 @@ found:
   p->pid = allocpid();
   p->state = USED;
 
+  // default tickets and ticks
+  p->tickets = 1;
+  p->ticks = 0;
+
   // Allocate a trapframe page.
   if((p->trapframe = (struct trapframe *)kalloc()) == 0){
     freeproc(p);
@@ -169,6 +183,8 @@ freeproc(struct proc *p)
   p->killed = 0;
   p->xstate = 0;
   p->state = UNUSED;
+  p->tickets = 0;
+  p->ticks = 0;
 }
 
 // Create a user page table for a given process, with no user memory,
@@ -289,6 +305,9 @@ kfork(void)
   np->cwd = idup(p->cwd);
 
   safestrcpy(np->name, p->name, sizeof(p->name));
+  // inherit parent's tickets
+  np->tickets = p->tickets;
+  np->ticks = 0;
 
   pid = np->pid;
 
@@ -437,27 +456,42 @@ scheduler(void)
     intr_on();
     intr_off();
 
-    int found = 0;
+    // Lottery scheduler: compute total tickets among RUNNABLE procs
+    int total = 0;
     for(p = proc; p < &proc[NPROC]; p++) {
       acquire(&p->lock);
       if(p->state == RUNNABLE) {
-        // Switch to chosen process.  It is the process's job
-        // to release its lock and then reacquire it
-        // before jumping back to us.
-        p->state = RUNNING;
-        c->proc = p;
-        swtch(&c->context, &p->context);
-
-        // Process is done running for now.
-        // It should have changed its p->state before coming back.
-        c->proc = 0;
-        found = 1;
+        total += p->tickets;
       }
       release(&p->lock);
     }
-    if(found == 0) {
-      // nothing to run; stop running on this core until an interrupt.
+
+    if(total == 0) {
+      // nothing runnable; sleep until an interrupt
       asm volatile("wfi");
+      continue;
+    }
+
+    // pick a winning ticket in [1..total]
+    uint winner = (randstate() % total) + 1;
+    int acc = 0;
+    for(p = proc; p < &proc[NPROC]; p++) {
+      acquire(&p->lock);
+      if(p->state == RUNNABLE) {
+        acc += p->tickets;
+        if(acc >= winner) {
+          // select this process
+          p->state = RUNNING;
+          c->proc = p;
+          p->ticks += 1; // record that it was chosen
+          swtch(&c->context, &p->context);
+          // came back
+          c->proc = 0;
+          release(&p->lock);
+          break;
+        }
+      }
+      release(&p->lock);
     }
   }
 }

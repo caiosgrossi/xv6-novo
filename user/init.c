@@ -23,6 +23,12 @@ main(void)
   dup(0);  // stdout
   dup(0);  // stderr
 
+  // start lotterytest automatically (non-blocking)
+  if(fork() == 0){
+    exec("lotterytest", (char*[]){"lotterytest", 0});
+    exit(0);
+  }
+
   for(;;){
     printf("init: starting sh\n");
     pid = fork();
