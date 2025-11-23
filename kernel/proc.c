@@ -5,6 +5,7 @@
 #include "spinlock.h"
 #include "proc.h"
 #include "defs.h"
+#include "pstat.h"
 
 struct cpu cpus[NCPU];
 
@@ -134,6 +135,8 @@ allocproc(void)
 found:
   p->pid = allocpid();
   p->state = USED;
+  p->tickets = 1;
+  p->ticks = 0;
 
   // default tickets and ticks
   p->tickets = 1;
@@ -291,6 +294,7 @@ kfork(void)
     return -1;
   }
   np->sz = p->sz;
+  np->tickets = p->tickets; // Inherit tickets
 
   // copy saved user registers.
   *(np->trapframe) = *(p->trapframe);
@@ -431,6 +435,13 @@ kwait(uint64 addr)
     // Wait for a child to exit.
     sleep(p, &wait_lock);  //DOC: wait-sleep
   }
+}
+
+// Simple LCG PRNG
+unsigned long rand_state = 1;
+unsigned int rand() {
+    rand_state = rand_state * 1664525 + 1013904223;
+    return rand_state;
 }
 
 // Per-CPU process scheduler.
@@ -721,4 +732,26 @@ procdump(void)
     printf("%d %s %s", p->pid, state, p->name);
     printf("\n");
   }
+}
+int
+proc_getpinfo(uint64 addr)
+{
+  struct proc *p;
+  struct pstat st;
+  int i = 0;
+
+  for(p = proc; p < &proc[NPROC]; p++){
+    acquire(&p->lock);
+    st.inuse[i] = (p->state != UNUSED);
+    st.tickets[i] = p->tickets;
+    st.pid[i] = p->pid;
+    st.ticks[i] = p->ticks;
+    release(&p->lock);
+    i++;
+  }
+
+  if(copyout(myproc()->pagetable, addr, (char *)&st, sizeof(st)) < 0)
+    return -1;
+
+  return 0;
 }
