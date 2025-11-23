@@ -95,6 +95,29 @@ sys_kill(void)
   return kkill(pid);
 }
 
+uint64
+sys_settickets(void)
+{
+  int n;
+  argint(0, &n);
+  if(n < 1)
+    return -1;
+  acquire(&myproc()->lock);
+  myproc()->tickets = n;
+  release(&myproc()->lock);
+  return 0;
+}
+
+uint64
+sys_getpinfo(void)
+{
+  uint64 p;
+  argaddr(0, &p);
+  if(p == 0)
+    return -1;
+  return proc_getpinfo(p);
+}
+
 // return how many clock tick interrupts have occurred
 // since start.
 uint64

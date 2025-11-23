@@ -5,6 +5,7 @@
 #include "spinlock.h"
 #include "proc.h"
 #include "defs.h"
+#include "pstat.h"
 
 struct cpu cpus[NCPU];
 
@@ -124,6 +125,8 @@ allocproc(void)
 found:
   p->pid = allocpid();
   p->state = USED;
+  p->tickets = 1;
+  p->ticks = 0;
 
   // Allocate a trapframe page.
   if((p->trapframe = (struct trapframe *)kalloc()) == 0){
@@ -275,6 +278,7 @@ kfork(void)
     return -1;
   }
   np->sz = p->sz;
+  np->tickets = p->tickets; // Inherit tickets
 
   // copy saved user registers.
   *(np->trapframe) = *(p->trapframe);
@@ -414,6 +418,13 @@ kwait(uint64 addr)
   }
 }
 
+// Simple LCG PRNG
+unsigned long rand_state = 1;
+unsigned int rand() {
+    rand_state = rand_state * 1664525 + 1013904223;
+    return rand_state;
+}
+
 // Per-CPU process scheduler.
 // Each CPU calls scheduler() after setting itself up.
 // Scheduler never returns.  It loops, doing:
@@ -437,25 +448,43 @@ scheduler(void)
     intr_on();
     intr_off();
 
-    int found = 0;
+    int total_tickets = 0;
+    // Count total tickets
     for(p = proc; p < &proc[NPROC]; p++) {
       acquire(&p->lock);
       if(p->state == RUNNABLE) {
-        // Switch to chosen process.  It is the process's job
-        // to release its lock and then reacquire it
-        // before jumping back to us.
-        p->state = RUNNING;
-        c->proc = p;
-        swtch(&c->context, &p->context);
-
-        // Process is done running for now.
-        // It should have changed its p->state before coming back.
-        c->proc = 0;
-        found = 1;
+        total_tickets += p->tickets;
       }
       release(&p->lock);
     }
-    if(found == 0) {
+
+    if (total_tickets > 0) {
+      int winning_ticket = rand() % total_tickets;
+      int current_tickets = 0;
+
+      for(p = proc; p < &proc[NPROC]; p++) {
+        acquire(&p->lock);
+        if(p->state == RUNNABLE) {
+          current_tickets += p->tickets;
+          if (current_tickets > winning_ticket) {
+            // Switch to chosen process.  It is the process's job
+            // to release its lock and then reacquire it
+            // before jumping back to us.
+            p->state = RUNNING;
+            p->ticks++; // Increment ticks
+            c->proc = p;
+            swtch(&c->context, &p->context);
+
+            // Process is done running for now.
+            // It should have changed its p->state before coming back.
+            c->proc = 0;
+            release(&p->lock);
+            break; // Found the winner, break to restart lottery
+          }
+        }
+        release(&p->lock);
+      }
+    } else {
       // nothing to run; stop running on this core until an interrupt.
       asm volatile("wfi");
     }
@@ -687,4 +716,26 @@ procdump(void)
     printf("%d %s %s", p->pid, state, p->name);
     printf("\n");
   }
+}
+int
+proc_getpinfo(uint64 addr)
+{
+  struct proc *p;
+  struct pstat st;
+  int i = 0;
+
+  for(p = proc; p < &proc[NPROC]; p++){
+    acquire(&p->lock);
+    st.inuse[i] = (p->state != UNUSED);
+    st.tickets[i] = p->tickets;
+    st.pid[i] = p->pid;
+    st.ticks[i] = p->ticks;
+    release(&p->lock);
+    i++;
+  }
+
+  if(copyout(myproc()->pagetable, addr, (char *)&st, sizeof(st)) < 0)
+    return -1;
+
+  return 0;
 }
