@@ -10,7 +10,7 @@
 int
 main(int argc, char *argv[])
 {
-  int tickets[3] = {30, 20, 10};
+  int tickets[3] = {50, 30, 10};
   int pids[3];
 
   // fork 3 children
@@ -68,9 +68,10 @@ main(int argc, char *argv[])
         if(st.pid[i] == pids[2]) ticks2 = st.ticks[i];
       }
     }
+
     printf("%d,%d,%d,%d\n", s, ticks0, ticks1, ticks2);
     pause(SLEEP_TICKS);
-  }
+}
 
   // kill children and wait
   for(int i = 0; i < 3; i++){
